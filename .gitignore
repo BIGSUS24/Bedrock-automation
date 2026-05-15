@@ -1,0 +1,41 @@
+# Dependencies
+/node_modules/
+
+# Local auth caches / tokens (do not commit)
+/auth/
+/.auth_cache/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build output / coverage (if generated)
+/dist/
+/build/
+/coverage/
+.nyc_output/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Knowledge-graph output (not needed to run)
+/graphify-out/
+
+# Local scratch / experiments / server files
+/edits/
+/bds/
+/bedrock_project/
+
+# Probe / diagnostic output
+*.err
