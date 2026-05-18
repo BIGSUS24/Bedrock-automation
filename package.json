@@ -1,0 +1,36 @@
+{
+  "name": "bedrock-companion",
+  "version": "2.0.0",
+  "description": "Production-grade Bedrock client — real RakNet transport, auth state machine, versioned protocol profiles",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "dev": "node --watch src/main.js",
+    "test": "node src/tests/index.js",
+    "test:raknet": "node src/tests/raknet/index.js",
+    "test:protocol": "node src/tests/protocol/index.js",
+    "test:handlers": "node src/tests/handlers/index.js",
+    "test:queues": "node src/tests/queues/index.js",
+    "test:reconnect": "node src/tests/reconnect/index.js"
+  },
+  "keywords": [
+    "bedrock",
+    "minecraft",
+    "raknet",
+    "protocol",
+    "companion"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "bedrock-protocol": "^3.56.1",
+    "prismarine-chunk": "^1.40.0",
+    "prismarine-registry": "^1.12.0",
+    "raknet-native": "^1.2.3",
+    "vec3": "^0.2.0"
+  }
+}
