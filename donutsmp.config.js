@@ -19,7 +19,7 @@ module.exports = {
   },
   reconnect: {
     enabled: true,
-    maxRetries: 5,
+    maxRetries: 15,
     baseDelay: 3000,
     maxDelay: 30000,
     multiplier: 2,
@@ -33,12 +33,17 @@ module.exports = {
       autoHit: { enabled: false, slot: 0, intervalMs: 1000 },
       // Eat for 10s every 5 min. Put food in the 2nd hotbar slot (index 1).
       autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
-      // Run /sell every 30s and dump the whole inventory into the GUI.
+      // Run /sell every 45s and dump the whole inventory into the GUI.
       // Run `.sell debug` once to confirm guiContainer matches this server.
-      autoSell: { enabled: true, intervalMs: 30000, command: '/sell' },
+      autoSell: { enabled: true, intervalMs: 45000, command: '/sell' },
     },
   },
   gameplay: {
+    // Chunk decoding + block indexing is heavy and only needed for pull/mining.
+    // Leave false on low-resource hosts (Termux/old phone): the world tracker
+    // then attaches lazily only when a pull/mining command actually runs, so an
+    // autosell-only bot never decodes a single chunk. Set true to track eagerly.
+    worldTracking: false,
     interaction: {
       // Live validation on DonutSMP accepted trapdoor use through inventory_transaction.
       usePlayerAuthInput: false,

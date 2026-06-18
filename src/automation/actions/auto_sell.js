@@ -104,8 +104,9 @@ function createAutoSell({ ctx, config, log = console.log }) {
     inventorySlots:      cfg.inventorySlots ?? 36,                         // player slots 0..35
     openTimeoutMs:       cfg.openTimeoutMs ?? 5000,
     perItemTimeoutMs:    cfg.perItemTimeoutMs ?? 2500,
-    settleMs:            cfg.settleMs ?? 250,                              // small pace between moves (lag tolerance)
-    saleTimeoutMs:       cfg.saleTimeoutMs ?? 5000,
+    settleMs:            cfg.settleMs ?? 350,                              // pace between moves (increased for Termux/mobile lag)
+    saleTimeoutMs:       cfg.saleTimeoutMs ?? 3000,
+    postCloseMs:         cfg.postCloseMs ?? 500,                           // wait after container close before next cycle
     maxOpenRetries:      cfg.maxOpenRetries ?? 2,
     maxItemRetries:      cfg.maxItemRetries ?? 1,
     // Matches "$4,000", "$12,500.50", "$ 3.6K", "$2M" etc. (color codes stripped first).
@@ -275,6 +276,14 @@ function createAutoSell({ ctx, config, log = console.log }) {
         const item = snapshot[invSlot];
         if (isEmptySlot(item)) continue;
 
+        // Bail the moment the connection drops — otherwise the loop would keep
+        // sending item moves that either fail (old session) or leak onto a
+        // freshly-reconnected session.
+        if (protocol.isConnected?.() === false) {
+          log('\x1b[33m[SELL]\x1b[0m Disconnected mid-transfer — aborting cycle');
+          return { ok: false, reason: 'disconnected' };
+        }
+
         if (!protocol.getOpenContainer?.()) {
           log('\x1b[33m[SELL]\x1b[0m GUI closed mid-transfer — stopping transfer');
           break;
@@ -354,9 +363,16 @@ function createAutoSell({ ctx, config, log = console.log }) {
         log(`\x1b[31m[SELL]\x1b[0m closeContainer failed: ${e.message}`);
       }
 
+      // Give the server time to fully process the close handshake (the server
+      // sends container_close back which we now ACK). On slow devices (Termux)
+      // this prevents the next /sell from arriving before the previous GUI is
+      // fully torn down server-side.
+      await sleep(settings.postCloseMs);
+
       // ── 5. Wait for + log the sale amount from chat. ──
       const deadline = Date.now() + settings.saleTimeoutMs;
       while (!saleMessage && Date.now() < deadline) {
+        if (protocol.isConnected?.() === false) break; // don't block on a dead session
         await sleep(150);
       }
       if (saleMessage) {

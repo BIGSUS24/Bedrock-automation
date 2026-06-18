@@ -124,9 +124,25 @@ class GameplayController extends EventEmitter {
     this._onServerCorrection = () => {
       this._serverCorrectionCount++;
     };
-    this.world.attach();
+    // World tracking (chunk decode + block indexing) is CPU/memory heavy and is
+    // ONLY needed for pull/mining/navigation — not for autosell or AFK. On
+    // low-resource hosts (e.g. Termux on an old phone) decoding every streamed
+    // chunk lags the event loop and leaks memory. So attach lazily: only when a
+    // gameplay command that needs the world actually runs. Set
+    // `gameplay.worldTracking: true` to attach eagerly (legacy behaviour).
+    this._worldAttached = false;
     this.protocol?.on?.('move', this._onServerMove);
     this.protocol?.on?.('moveCorrection', this._onServerCorrection);
+    if (config?.gameplay?.worldTracking === true) {
+      this._attachWorld();
+    }
+  }
+
+  /** Attach the world tracker on first use (idempotent). */
+  _attachWorld() {
+    if (this._worldAttached) return;
+    this.world.attach();
+    this._worldAttached = true;
   }
 
   stop() {
@@ -134,7 +150,10 @@ class GameplayController extends EventEmitter {
     this.protocol?.clearGameplayInputState?.();
     if (this._onServerMove) this.protocol?.removeListener?.('move', this._onServerMove);
     if (this._onServerCorrection) this.protocol?.removeListener?.('moveCorrection', this._onServerCorrection);
-    this.world.detach();
+    if (this._worldAttached) {
+      this.world.detach();
+      this._worldAttached = false;
+    }
   }
 
   async pull(options = {}) {
@@ -919,6 +938,10 @@ class GameplayController extends EventEmitter {
 
   _ensureReady() {
     if (!this.protocol?.isConnected?.()) throw new Error('Bot is not connected/playing.');
+    // A gameplay command needs world data — start tracking now if it wasn't
+    // already (chunks stream in over the next moment; waypoint fallbacks cover
+    // the brief window before the first chunks decode).
+    this._attachWorld();
   }
 
   _waitForPositionReady() {

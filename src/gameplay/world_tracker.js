@@ -6,8 +6,24 @@ const chunkLoader = require('prismarine-chunk');
 const { Vec3 } = require('vec3');
 const { BlockMatcher } = require('./block_matcher');
 
+// Hard caps so long-running sessions on low-RAM hosts (e.g. Termux) can't grow
+// these maps without bound. Both evict the oldest-inserted entry when exceeded.
+// A 6-chunk view is ~169 columns and a few thousand tracked block updates, so
+// these caps are generous headroom while still preventing an unbounded leak.
+const MAX_CHUNKS = 1024;
+const MAX_BLOCK_UPDATES = 8192;
+
 function keyOf(pos) {
   return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
+}
+
+/** Evict oldest-inserted entries from a Map until it is at or below `max`. */
+function capMap(map, max) {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
 }
 
 function chunkKey(x, z) {
@@ -387,6 +403,7 @@ class WorldTracker extends EventEmitter {
       await chunk.networkDecodeNoCache(Buffer.from(packet.payload), Number(packet.sub_chunk_count));
       this._remapSignedSubChunkSections(chunk);
       this.chunks.set(ck, chunk);
+      capMap(this.chunks, MAX_CHUNKS);
       this.loadedChunkKeys.add(ck);
       this.failedChunkKeys.delete(ck); // Successfully decoded
       this.emit('chunkLoaded', { x: packet.x, z: packet.z });
@@ -438,6 +455,7 @@ class WorldTracker extends EventEmitter {
       updatedAt: Date.now(),
     };
     this.blockUpdates.set(keyOf(position), entry);
+    capMap(this.blockUpdates, MAX_BLOCK_UPDATES);
     this.emit('blockUpdate', entry);
   }
 

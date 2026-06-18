@@ -167,6 +167,7 @@ function createAutomation(config, stateManager, protocolClient) {
     stop() {
       scheduler.stop();
       ctx.eating = false;
+      ctx.selling = false;
       protocolClient?.setUsingItem?.(false);
     },
 
