@@ -35,7 +35,7 @@ module.exports = {
       autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
       // Run /sell every 45s and dump the whole inventory into the GUI.
       // Run `.sell debug` once to confirm guiContainer matches this server.
-      autoSell: { enabled: true, intervalMs: 45000, command: '/sell' },
+      autoSell: { enabled: true, intervalMs: 30000, command: '/sell' },
     },
   },
   gameplay: {
