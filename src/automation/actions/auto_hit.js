@@ -23,6 +23,7 @@
 function createAutoHit({ slot = 0, ctx }) {
   function condition(state) {
     if (ctx.eating) return false;          // don't swing mid-eat (would cancel it)
+    if (ctx.selling) return false;         // don't swing mid-sell (slot changes corrupt container transactions)
     return state.isPlaying();
   }
 

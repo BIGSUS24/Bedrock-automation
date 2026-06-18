@@ -30,9 +30,9 @@ module.exports = {
     tickMs: 50,
     actions: {
       // Swing the sword every 1s. Put a sword in the 1st hotbar slot (index 0).
-      autoHit: { enabled: true, slot: 0, intervalMs: 1000 },
+      autoHit: { enabled: false, slot: 0, intervalMs: 1000 },
       // Eat for 10s every 5 min. Put food in the 2nd hotbar slot (index 1).
-      autoEat: { enabled: true, slot: 1, intervalMs: 300000, durationMs: 10000 },
+      autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
       // Run /sell every 30s and dump the whole inventory into the GUI.
       // Run `.sell debug` once to confirm guiContainer matches this server.
       autoSell: { enabled: true, intervalMs: 30000, command: '/sell' },

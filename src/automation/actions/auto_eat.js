@@ -24,6 +24,7 @@
 function createAutoEat({ slot = 1, durationMs = 10000, ctx }) {
   function condition(state) {
     if (ctx.eating) return false;          // already eating — don't re-fire
+    if (ctx.selling) return false;         // don't eat mid-sell (slot changes corrupt container transactions)
     return state.isPlaying();
   }
 
