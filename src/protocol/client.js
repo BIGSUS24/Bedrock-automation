@@ -40,10 +40,6 @@ class BedrockProtocolClient extends EventEmitter {
     // Currently-open server container (chest GUI etc.), or null. Populated from
     // container_open and kept in sync from inventory_content/inventory_slot.
     this._openContainer = null;
-    // True between sending our own (ESC) container_close and receiving the
-    // server's confirmation, so we don't echo a redundant second close for a
-    // close we initiated. Only server-FORCED closes need a client ACK.
-    this._awaitingCloseConfirm = false;
     // Bedrock client ItemStackRequest ids are odd negative, decrementing.
     this._nextSellRequestId = -1;
     this._hasMoveCorrection = false;
@@ -65,7 +61,6 @@ class BedrockProtocolClient extends EventEmitter {
 
     // Reset per-session state so nothing leaks across reconnects
     this._openContainer = null;
-    this._awaitingCloseConfirm = false;
     this._nextSellRequestId = -1;
 
     this.state.setStatus('connecting');
@@ -370,10 +365,6 @@ class BedrockProtocolClient extends EventEmitter {
       window_type: oc?.windowType ?? 'container',
       server:      false, // false = client-initiated (ESC)
     });
-    // Mark this as our own close so the server's confirming container_close is
-    // not echoed back as a redundant second close (only server-forced closes
-    // need a client ACK).
-    this._awaitingCloseConfirm = true;
     // Clear eagerly so a fast next cycle never sees this (now-closing) GUI as
     // open before the server's own container_close arrives.
     this._openContainer = null;
@@ -925,18 +916,12 @@ class BedrockProtocolClient extends EventEmitter {
       const closed = this._openContainer;
       this._openContainer = null;
 
-      // If this is the server confirming a close WE initiated (ESC), it needs
-      // no reply — echoing one would be a redundant second close. Consume the
-      // flag and stop here.
-      const wasOurClose = this._awaitingCloseConfirm;
-      this._awaitingCloseConfirm = false;
-
-      // Bedrock protocol: when the server FORCES a close (server: true and we
-      // didn't initiate it), the client MUST echo back its own container_close
-      // to acknowledge. Without this, the server thinks the container is stuck
-      // half-open and will refuse to open new GUIs after a few cycles, then
-      // kick the bot.
-      if (packet.server && !wasOurClose) {
+      // Bedrock protocol: when the server sends container_close (server: true),
+      // the client MUST echo back its own container_close to acknowledge.
+      // DonutSMP/Geyser requires this even for a close the client initiated
+      // (ESC) — without the ACK the server keeps the container half-open and
+      // refuses to open the next /sell GUI, which then aborts and disconnects.
+      if (packet.server) {
         try {
           c.queue('container_close', {
             window_id:   packet.window_id,

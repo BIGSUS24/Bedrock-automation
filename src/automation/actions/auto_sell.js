@@ -218,6 +218,13 @@ function createAutoSell({ ctx, config, log = console.log }) {
       // ── 1 + 2. Trigger /sell, wait for the GUI to open (with retries). ──
       let oc = null;
       for (let attempt = 1; attempt <= settings.maxOpenRetries + 1 && !oc; attempt++) {
+        // If the connection dropped (e.g. mid-cycle disconnect), stop now.
+        // Otherwise this loop keeps firing /sell across the reconnect and bleeds
+        // the dead cycle onto the new session.
+        if (protocol.isConnected?.() === false) {
+          log('\x1b[33m[SELL]\x1b[0m Disconnected before GUI opened — aborting cycle');
+          return { ok: false, reason: 'disconnected' };
+        }
         dbg(`sending "${settings.command}" (attempt ${attempt})`);
         const openP = waitForEvent(protocol, 'containerOpen', null, settings.openTimeoutMs);
         try {

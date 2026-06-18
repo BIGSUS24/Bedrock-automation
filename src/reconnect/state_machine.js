@@ -184,7 +184,13 @@ class ReconnectStateMachine extends EventEmitter {
     const old = this._currentState;
     this._currentState = newState;
     this.emit('stateChange', { from: old, to: newState });
-    this.state.setStatus(newState === ReconnectState.CONNECTED ? 'connected' : newState);
+    // A successful reconnect resolves only after the protocol spawned the
+    // player and already set status to 'playing'. Mapping CONNECTED to
+    // 'connected' here would clobber that, making state.isPlaying() false —
+    // which silently kills autosell (its condition is isPlaying() && !selling)
+    // after every reconnect. Map CONNECTED to 'playing' so isPlaying() stays
+    // true. (First connect goes through the protocol directly and is fine.)
+    this.state.setStatus(newState === ReconnectState.CONNECTED ? 'playing' : newState);
   }
 
   _wait(ms) {
