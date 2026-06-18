@@ -109,6 +109,16 @@ function createAutoSell({ ctx, config, log = console.log }) {
     postCloseMs:         cfg.postCloseMs ?? 500,                           // wait after container close before next cycle
     maxOpenRetries:      cfg.maxOpenRetries ?? 2,
     maxItemRetries:      cfg.maxItemRetries ?? 1,
+    // If this many item moves in a row get no item_stack_response, the server
+    // has gone silent on this container (throttle / dead GUI). Stop hammering
+    // it — continuing to push moves into a dead container is what gets the
+    // socket closed by the server. Close and end the cycle instead.
+    maxSilentMoves:      cfg.maxSilentMoves ?? 3,
+    // Adaptive backoff when the server refuses to open the GUI (throttle). Each
+    // consecutive open-failure doubles the wait before the next attempt, capped,
+    // and resets the instant a GUI opens again.
+    openFailBackoffMs:   cfg.openFailBackoffMs ?? 120000,   // base penalty after 1st refused open
+    openFailBackoffMaxMs: cfg.openFailBackoffMaxMs ?? 300000, // cap (5 min)
     // Matches "$4,000", "$12,500.50", "$ 3.6K", "$2M" etc. (color codes stripped first).
     saleRegex:           cfg.saleRegex ? new RegExp(cfg.saleRegex) : /\$\s*[\d,]+(?:\.\d+)?\s*[kKmMbB]?/,
     debug:               cfg.debug ?? false,
@@ -116,6 +126,28 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
   function dbg(msg) {
     if (settings.debug) log(`\x1b[90m[SELL:debug]\x1b[0m ${msg}`);
+  }
+
+  // Adaptive open-failure backoff state (shared across cycles via this closure).
+  let openFailures = 0;  // consecutive cycles where the GUI refused to open
+  let backoffUntil = 0;  // epoch ms before which condition() suppresses sells
+
+  /** Record a refused-open and grow the backoff window. */
+  function noteOpenFailure() {
+    openFailures++;
+    const delay = Math.min(
+      settings.openFailBackoffMs * Math.pow(2, openFailures - 1),
+      settings.openFailBackoffMaxMs
+    );
+    backoffUntil = Date.now() + delay;
+    log(`\x1b[33m[SELL]\x1b[0m GUI refused ${openFailures}x — backing off ${Math.round(delay / 1000)}s before next attempt (likely server throttle)`);
+  }
+
+  /** A GUI opened — clear any throttle backoff. */
+  function noteOpenSuccess() {
+    if (openFailures) dbg(`open recovered after ${openFailures} failure(s) — clearing backoff`);
+    openFailures = 0;
+    backoffUntil = 0;
   }
 
   /** Log a full snapshot of a container — ids, types, slot numbers, item names. */
@@ -247,8 +279,11 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
       if (!oc) {
         log('\x1b[31m[SELL]\x1b[0m Sell GUI never opened — aborting cycle');
+        noteOpenFailure();
         return { ok: false, reason: 'no_gui' };
       }
+
+      noteOpenSuccess();
 
       // Let the initial container content arrive.
       await sleep(settings.settleMs);
@@ -278,6 +313,7 @@ function createAutoSell({ ctx, config, log = console.log }) {
       let moved = 0;
       let skipped = 0;
       let uncertain = 0;
+      let consecutiveSilent = 0; // item moves in a row with no server response
 
       for (let invSlot = 0; invSlot < snapshot.length; invSlot++) {
         const item = snapshot[invSlot];
@@ -347,15 +383,27 @@ function createAutoSell({ ctx, config, log = console.log }) {
         if (outcome === 'ok') {
           usedGui.add(guiSlot);
           moved++;
+          consecutiveSilent = 0;
           dbg(`  moved ${name} -> GUI[${guiSlot}] OK`);
         } else if (outcome === 'timeout') {
           usedGui.add(guiSlot);
           uncertain++;
+          consecutiveSilent++;
           log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`);
         } else {
           skipped++;
+          consecutiveSilent++;
           log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: move rejected — skipping`);
         }
+
+        // Server has stopped acknowledging moves — the container is dead/throttled.
+        // Stop pushing packets at it (that silence-then-spam is what triggers the
+        // server-side socket close) and end the cycle cleanly.
+        if (consecutiveSilent >= settings.maxSilentMoves) {
+          log(`\x1b[31m[SELL]\x1b[0m Server stopped responding after ${consecutiveSilent} moves — aborting transfer to protect the connection`);
+          break;
+        }
+
         await sleep(settings.settleMs);
       }
 
@@ -410,6 +458,8 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
   // Scheduler-facing condition/execute.
   function condition(state) {
+    // Suppress sells while inside an open-failure backoff window (server throttle).
+    if (Date.now() < backoffUntil) return false;
     return state.isPlaying?.() && !ctx.selling;
   }
   async function execute(state, protocol) {

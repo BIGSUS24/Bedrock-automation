@@ -33,9 +33,12 @@ module.exports = {
       autoHit: { enabled: false, slot: 0, intervalMs: 1000 },
       // Eat for 10s every 5 min. Put food in the 2nd hotbar slot (index 1).
       autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
-      // Run /sell every 45s and dump the whole inventory into the GUI.
+      // Run /sell every 120s and dump the whole inventory into the GUI. Longer
+      // interval avoids DonutSMP's throttle that refuses GUIs after rapid sells.
+      // If the server still refuses to open the GUI, the bot backs off
+      // progressively (see auto_sell openFailBackoff*) until a sell succeeds.
       // Run `.sell debug` once to confirm guiContainer matches this server.
-      autoSell: { enabled: true, intervalMs: 45000, command: '/sell' },
+      autoSell: { enabled: true, intervalMs: 120000, command: '/sell' },
     },
   },
   gameplay: {
