@@ -148,7 +148,7 @@ function createAutoSell({ ctx, config, log = console.log }) {
     postSaleMs:          cfg.postSaleMs ?? 300,                            // settle after sale
 
     maxOpenRetries:      cfg.maxOpenRetries ?? 2,
-    maxItemRetries:      cfg.maxItemRetries ?? 1,
+    maxItemRetries:      cfg.maxItemRetries ?? 2, // each retry re-reads the live stack_id (churn-resilient)
 
     // Matches "$4,000", "$12,500.50", "$ 3.6K", "$2M" etc. (colour codes stripped first).
     saleRegex:           cfg.saleRegex ? new RegExp(cfg.saleRegex) : /\$\s*[\d,]+(?:\.\d+)?\s*[kKmMbB]?/,
@@ -304,9 +304,14 @@ function createAutoSell({ ctx, config, log = console.log }) {
         dbg('reusing already-open sell GUI');
         return { oc, button, reused: true };
       }
-      // A container is open but has no recognisable button — fall through and
-      // (re)send /sell; the server replaces the GUI in place.
-      dbg('open container has no sell button — sending /sell to refresh');
+      // A container is tracked but shows no sell button. On a flaky mobile link
+      // the server's container_close can be dropped, leaving _openContainer
+      // pinned to a dead GUI forever — every later /sell is then ignored ("GUI
+      // failed to open"), permanently, until restart. Force a client-side close
+      // to clear both ends before reopening fresh.
+      log('\x1b[33m[SELL]\x1b[0m Open GUI has no sell button — closing it to recover, then reopening');
+      try { await protocol.closeContainer(); } catch (_) { /* link may be gone */ }
+      await sleep(400);
     }
 
     // 2. Open path — send /sell and wait for the GUI (with retries).
@@ -421,9 +426,12 @@ function createAutoSell({ ctx, config, log = console.log }) {
       }
 
       // ── 3. TRANSFER every inventory item into free GUI slots. ──
-      const snapshot = (state.inventory?.slots || [])
-        .slice(0, settings.inventorySlots)
-        .map((s) => (s ? { ...s } : s));
+      // Read the LIVE inventory slot each time, never a start-of-cycle snapshot:
+      // when a machine/hopper is dumping items the server reassigns stack_ids
+      // constantly, and ItemStackRequest is validated by stack_net_id — a stale
+      // id makes the server reject the whole move. (Root cause of "can't sell
+      // when inventory is full / machine running".)
+      const liveSlot = (i) => (state.inventory?.slots || [])[i];
 
       const usedGui = new Set();
       (oc.slots || []).forEach((s, i) => { if (!isEmptySlot(s)) usedGui.add(i); });
@@ -439,10 +447,10 @@ function createAutoSell({ ctx, config, log = console.log }) {
       let moved = 0;
       let skipped = 0;
       let uncertain = 0;
+      let attempted = 0; // non-empty slots we actually tried to move
 
-      for (let invSlot = 0; invSlot < snapshot.length; invSlot++) {
-        const item = snapshot[invSlot];
-        if (isEmptySlot(item)) continue;
+      for (let invSlot = 0; invSlot < settings.inventorySlots; invSlot++) {
+        if (isEmptySlot(liveSlot(invSlot))) continue;
 
         if (!connected()) {
           log('\x1b[33m[SELL]\x1b[0m Disconnected mid-transfer — aborting cycle');
@@ -456,12 +464,16 @@ function createAutoSell({ ctx, config, log = console.log }) {
         const guiSlot = nextGuiSlot();
         if (guiSlot === -1) { log('\x1b[33m[SELL]\x1b[0m No free GUI slot left — stopping transfer'); break; }
 
-        const count = countOf(item);
-        const srcStackId = stackIdOf(item);
-        const name = itemName(item);
+        attempted++;
+        const name = itemName(liveSlot(invSlot));
 
         let outcome = 'fail';
         for (let r = 0; r <= settings.maxItemRetries && outcome === 'fail'; r++) {
+          // Re-read the live slot every attempt so the stack_id is current.
+          const item = liveSlot(invSlot);
+          if (isEmptySlot(item)) { outcome = 'gone'; break; }
+          const count = countOf(item);
+          const srcStackId = stackIdOf(item);
           dbg(`move INV[${invSlot}] ${name} x${count} (stackId=${srcStackId}) -> GUI[${guiSlot}]${r ? ` (retry ${r})` : ''}`);
           let reqId = null;
           try {
@@ -484,6 +496,7 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
         if (outcome === 'ok') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); moved++; }
         else if (outcome === 'timeout') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); uncertain++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`); }
+        else if (outcome === 'gone') { attempted--; /* item left the slot before we moved it — not a failure */ }
         else { skipped++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: move rejected — skipping`); }
         await sleep(settings.settleMs);
       }
@@ -491,6 +504,15 @@ function createAutoSell({ ctx, config, log = console.log }) {
       log(`\x1b[32m[SELL]\x1b[0m Items transferred — moved ${moved}, uncertain ${uncertain}, skipped ${skipped}`);
 
       if (moved === 0 && uncertain === 0) {
+        if (attempted > 0) {
+          // We had items but the server accepted none — the GUI is almost
+          // certainly dead (its container_close was lost on a flaky link).
+          // Close it so the next cycle reopens a fresh one instead of looping
+          // forever against a zombie GUI.
+          log('\x1b[33m[SELL]\x1b[0m Items present but none could be moved — GUI looks dead, closing to recover');
+          try { await protocol.closeContainer(); } catch (_) { /* link may be gone */ }
+          return { ok: false, reason: 'gui_dead', moved: 0, uncertain: 0, skipped, reused: acq.reused, durationMs: Date.now() - startedAt };
+        }
         log('\x1b[33m[SELL]\x1b[0m Nothing to sell this cycle — GUI left open, waiting for next interval');
         return { ok: true, moved: 0, uncertain: 0, skipped, clicked: false, amount: null, reused: acq.reused, durationMs: Date.now() - startedAt };
       }

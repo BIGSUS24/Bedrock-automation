@@ -94,6 +94,11 @@ class BedrockProtocolClient extends EventEmitter {
       skipPing:       isReconnect,
       // Raise bedrock-protocol's internal connect timeout to 30s
       connectTimeout: 30_000,
+      // Honour the configured chunk radius (was previously ignored). The bot only
+      // needs the chunks immediately around it to see item drops / the machine
+      // working; a small radius means far less chunk decoding — big win on weak
+      // phones. Lower `server.chunkRadius` in config to cut CPU/RAM on Termux.
+      viewDistance:   this.config.server?.chunkRadius ?? 8,
     };
 
     console.log(`[Client] Connecting to ${address}:${port || 19132} [${opts.offline ? 'offline' : 'microsoft'}] v${opts.version}`);
