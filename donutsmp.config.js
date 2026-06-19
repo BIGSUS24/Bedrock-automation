@@ -27,7 +27,11 @@ module.exports = {
   },
   automation: {
     enabled: true,
-    tickMs: 50,
+    // The only action here is autoSell on a 30s timer, so there is no reason to
+    // wake the scheduler 20x/sec (tickMs:50). Checking once a second is plenty and
+    // frees the CPU on a weak phone so the 50ms keep-alive frames go out on time
+    // (late keep-alives are what the server reads as a dead client → disconnect).
+    tickMs: 1000,
     actions: {
       // Swing the sword every 1s. Put a sword in the 1st hotbar slot (index 0).
       autoHit: { enabled: false, slot: 0, intervalMs: 1000 },
@@ -92,7 +96,11 @@ module.exports = {
     },
   },
   logging: {
-    level: 'debug',
+    // 'debug' does synchronous console I/O on every packet — on a phone terminal
+    // that blocks the event loop and delays keep-alives. 'info' drops the per-packet
+    // debug spam (the real CPU cost) while keeping sale/earnings lines visible.
+    // Bump back to 'debug' only when troubleshooting.
+    level: 'info',
     timestamp: true,
   },
 };

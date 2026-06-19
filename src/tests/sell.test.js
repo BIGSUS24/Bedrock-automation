@@ -101,9 +101,25 @@ async function test3_reuseNoButtonRecovery() {
   assert.ok(proto.calls.command >= 1, '/sell must be re-sent after recovery close');
 }
 
+async function test4_circuitBreaker() {
+  const state = makeState();
+  for (let i = 0; i < 20; i++) state.inventory.slots[i] = invItem(100 + i);
+  const container = { oc: { windowId: 1, windowType: 'container', slots: Array(54).fill({ network_id: 0 }) } };
+  container.oc.slots[53] = buttonItem();
+  const proto = makeProtocol({ container, acceptStackId: 100, state });
+  proto.sendItemStackRequest = async () => { /* stalled link: no response ever */ return -1; };
+  let clicked = false;
+  const sell = createAutoSell({ ctx: {}, config: { automation: { actions: { autoSell: { perItemTimeoutMs: 30, settleMs: 0, maxConsecutiveTimeouts: 3 } } } }, log: (m) => { if (/clicked/i.test(m)) clicked = true; } });
+  const r = await sell.runOnce(state, proto);
+  assert.strictEqual(r.reason, 'link_stalled', 'stalled link must trip the circuit breaker');
+  assert.ok(r.uncertain <= 4, `bail after ~3 timeouts, not all 20 (got ${r.uncertain})`);
+  assert.strictEqual(clicked, false, 'must NOT click / false-confirm on a stalled link');
+}
+
 (async () => {
   await test1_happyPath();
   await test2_deadGuiSelfHeal();
   await test3_reuseNoButtonRecovery();
-  console.log('✓ sell.test.js — all 3 passed');
+  await test4_circuitBreaker();
+  console.log('✓ sell.test.js — all 4 passed');
 })().catch((e) => { console.error('✕', e.message); process.exit(1); });

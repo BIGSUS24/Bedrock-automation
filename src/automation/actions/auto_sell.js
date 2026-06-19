@@ -149,6 +149,7 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
     maxOpenRetries:      cfg.maxOpenRetries ?? 2,
     maxItemRetries:      cfg.maxItemRetries ?? 2, // each retry re-reads the live stack_id (churn-resilient)
+    maxConsecutiveTimeouts: cfg.maxConsecutiveTimeouts ?? 3, // unacked moves in a row → bail (anti-flood)
 
     // Matches "$4,000", "$12,500.50", "$ 3.6K", "$2M" etc. (colour codes stripped first).
     saleRegex:           cfg.saleRegex ? new RegExp(cfg.saleRegex) : /\$\s*[\d,]+(?:\.\d+)?\s*[kKmMbB]?/,
@@ -447,7 +448,8 @@ function createAutoSell({ ctx, config, log = console.log }) {
       let moved = 0;
       let skipped = 0;
       let uncertain = 0;
-      let attempted = 0; // non-empty slots we actually tried to move
+      let attempted = 0;           // non-empty slots we actually tried to move
+      let consecutiveTimeouts = 0; // ack-less moves in a row → link is stalling
 
       for (let invSlot = 0; invSlot < settings.inventorySlots; invSlot++) {
         if (isEmptySlot(liveSlot(invSlot))) continue;
@@ -494,10 +496,19 @@ function createAutoSell({ ctx, config, log = console.log }) {
           else { outcome = 'fail'; if (r < settings.maxItemRetries) await sleep(settings.settleMs); }
         }
 
-        if (outcome === 'ok') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); moved++; }
-        else if (outcome === 'timeout') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); uncertain++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`); }
+        if (outcome === 'ok') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); moved++; consecutiveTimeouts = 0; }
+        else if (outcome === 'timeout') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); uncertain++; consecutiveTimeouts++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`); }
         else if (outcome === 'gone') { attempted--; /* item left the slot before we moved it — not a failure */ }
-        else { skipped++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: move rejected — skipping`); }
+        else { skipped++; consecutiveTimeouts = 0; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: move rejected — skipping`); }
+
+        // Circuit breaker: once the server stops acking moves, queuing the other
+        // ~30 just floods an already-struggling phone link — the death-spiral that
+        // ended in "Connection closed". Bail now; don't click or false-confirm a
+        // sale of items that never moved. Next interval retries on a calmer link.
+        if (consecutiveTimeouts >= settings.maxConsecutiveTimeouts) {
+          log(`\x1b[33m[SELL]\x1b[0m ${consecutiveTimeouts} moves unacked in a row — link stalling, aborting cycle (will retry next interval)`);
+          return { ok: false, reason: 'link_stalled', moved, uncertain, skipped, reused: acq.reused, durationMs: Date.now() - startedAt };
+        }
         await sleep(settings.settleMs);
       }
 
