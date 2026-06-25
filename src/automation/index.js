@@ -26,7 +26,7 @@ const { Scheduler }         = require('./scheduler');
 const { CooldownTracker }   = require('./cooldowns');
 const { createAutoHit }     = require('./actions/auto_hit');
 const { createAutoEat }     = require('./actions/auto_eat');
-const { createAutoSell }    = require('./actions/auto_sell');
+const { createAutoSell, isEmptySlot } = require('./actions/auto_sell');
 
 /**
  * Create and wire up the automation stack.
@@ -65,10 +65,34 @@ function createAutomation(config, stateManager, protocolClient) {
   const sellAction = createAutoSell({ ctx, config, log: console.log });
   const sellSpec = {
     name: 'autoSell',
-    interval: sellCfg.intervalMs ?? 30000,    // 30 sec
+    interval: sellCfg.intervalMs ?? 10000,    // 10 sec floor
     condition: sellAction.condition,
     execute: sellAction.execute,
   };
+
+  // ── Event-driven selling ────────────────────────────────────────────────────
+  // The interval is only a floor — a fast machine can fill the inventory long
+  // before the next tick, spilling items onto the ground. So also sell the moment
+  // fill crosses a threshold. ctx.selling (checked in runOnce) prevents this from
+  // overlapping the timer cycle; once a cycle drains the inventory below the
+  // threshold, this goes quiet until it fills again.
+  const sellThreshold = sellCfg.thresholdSlots ?? 32;   // of 36 player slots; set 0 to disable
+  let eventSellInFlight = false;
+  function maybeEventSell() {
+    if (sellThreshold <= 0 || !isOn('autoSell')) return;
+    if (ctx.selling || eventSellInFlight) return;
+    if (!stateManager.isPlaying?.()) return;
+    const slots = stateManager.inventory?.slots || [];
+    let filled = 0;
+    for (let i = 0; i < 36; i++) if (!isEmptySlot(slots[i])) filled++;
+    if (filled < sellThreshold) return;
+    eventSellInFlight = true;
+    Promise.resolve()
+      .then(() => sellAction.runOnce(stateManager, protocolClient))
+      .catch(() => { /* runOnce never throws, but stay defensive */ })
+      .finally(() => { eventSellInFlight = false; });
+  }
+  stateManager.on('inventoryUpdate', maybeEventSell);
 
   // ── Internal register / unregister ──────────────────────────────────────────
 
@@ -153,6 +177,7 @@ function createAutomation(config, stateManager, protocolClient) {
         eatInterval: eatSpec.interval,
         eatDuration: eatSpec.durationMs,
         sellInterval: sellSpec.interval,
+        sellThreshold,
       };
     },
 

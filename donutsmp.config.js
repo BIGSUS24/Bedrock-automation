@@ -27,8 +27,9 @@ module.exports = {
   },
   automation: {
     enabled: true,
-    // The only action here is autoSell on a 30s timer, so there is no reason to
-    // wake the scheduler 20x/sec (tickMs:50). Checking once a second is plenty and
+    // The only action here is autoSell (a 10s timer floor + event-driven threshold
+    // trigger), so there is no reason to wake the scheduler 20x/sec (tickMs:50).
+    // Checking once a second is plenty and
     // frees the CPU on a weak phone so the 50ms keep-alive frames go out on time
     // (late keep-alives are what the server reads as a dead client → disconnect).
     tickMs: 1000,
@@ -37,9 +38,10 @@ module.exports = {
       autoHit: { enabled: false, slot: 0, intervalMs: 1000 },
       // Eat for 10s every 5 min. Put food in the 2nd hotbar slot (index 1).
       autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
-      // Run /sell every 45s and dump the whole inventory into the GUI.
+      // Sell every 10s, AND immediately whenever the inventory fills past
+      // `thresholdSlots` (of 36) so a fast machine never backs up onto the ground.
       // Run `.sell debug` once to confirm guiContainer matches this server.
-      autoSell: { enabled: true, intervalMs: 30000, command: '/sell' },
+      autoSell: { enabled: true, intervalMs: 10000, thresholdSlots: 32, command: '/sell' },
     },
   },
   gameplay: {

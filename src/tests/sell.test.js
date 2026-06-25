@@ -25,7 +25,7 @@ function invItem(stackId) {
 
 // Minimal protocol mock. `acceptStackId` is the only source stack_id the fake
 // server will accept for a move (simulates churn: a stale id is rejected).
-function makeProtocol({ container, acceptStackId, state, autoSale = true }) {
+function makeProtocol({ container, acceptStackId, state, autoSale = true, refillSourceWith = null }) {
   const p = new EventEmitter();
   p.calls = { close: 0, command: 0 };
   let reqId = -1;
@@ -41,7 +41,8 @@ function makeProtocol({ container, acceptStackId, state, autoSale = true }) {
       if (a.type_id === 'place' && ok) {
         // Move accepted — empty the source inventory slot, like the real server.
         const slots = [...state.inventory.slots];
-        slots[a.source.slot] = { network_id: 0 };
+        // Simulate a ground-item pickup refilling the freed slot mid-cycle (race).
+        slots[a.source.slot] = refillSourceWith ? refillSourceWith() : { network_id: 0 };
         state.inventory.slots = slots;
       }
       p.emit('itemStackResponse', { responses: [{ request_id: id, status: ok ? 'ok' : 'error' }] });
@@ -116,10 +117,26 @@ async function test4_circuitBreaker() {
   assert.strictEqual(clicked, false, 'must NOT click / false-confirm on a stalled link');
 }
 
+async function test5_pickupRaceGuard() {
+  // A ground item lands in the freed slot mid-cycle (different stack_id). After the
+  // sale, the local-state clear must NOT wipe that freshly-picked, unsold item.
+  const state = makeState();
+  state.inventory.slots[0] = invItem(100);
+  const container = { oc: { windowId: 1, windowType: 'container', slots: Array(54).fill({ network_id: 0 }) } };
+  container.oc.slots[53] = buttonItem();
+  const proto = makeProtocol({ container, acceptStackId: 100, state, refillSourceWith: () => invItem(777) });
+  const sell = createAutoSell({ ctx: {}, config: {}, log: () => {} });
+  const r = await sell.runOnce(state, proto);
+  assert.strictEqual(r.ok, true, 'cycle should succeed');
+  assert.strictEqual(stackIdRaw(state.inventory.slots[0]), 777, 'picked-up item must survive the post-sale clear');
+}
+function stackIdRaw(it) { return Number(it?.raw?.stack_id ?? it?.stack_id ?? 0); }
+
 (async () => {
   await test1_happyPath();
   await test2_deadGuiSelfHeal();
   await test3_reuseNoButtonRecovery();
   await test4_circuitBreaker();
-  console.log('✓ sell.test.js — all 4 passed');
+  await test5_pickupRaceGuard();
+  console.log('✓ sell.test.js — all 5 passed');
 })().catch((e) => { console.error('✕', e.message); process.exit(1); });

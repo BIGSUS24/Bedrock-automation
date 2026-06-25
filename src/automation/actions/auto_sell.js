@@ -141,10 +141,10 @@ function createAutoSell({ ctx, config, log = console.log }) {
     buttonWaitMs:        cfg.buttonWaitMs ?? 8000,                         // max wait for GUI content + button to appear
     reuseWaitMs:         cfg.reuseWaitMs ?? 1500,                          // short poll to confirm an already-open GUI is usable
     contentSettleMs:     cfg.contentSettleMs ?? 600,                       // content unchanged this long → stop polling
-    perItemTimeoutMs:    cfg.perItemTimeoutMs ?? 2500,                     // wait for an item move ack
+    perItemTimeoutMs:    cfg.perItemTimeoutMs ?? 1500,                     // wait for an item move ack (acks normally land <1 RTT; lower = faster recovery from a lost ack)
     clickTimeoutMs:      cfg.clickTimeoutMs ?? 3000,                       // wait for the button-click ack
     saleTimeoutMs:       cfg.saleTimeoutMs ?? 5000,                        // wait for sale confirmation
-    settleMs:            cfg.settleMs ?? 300,                              // pace between moves
+    settleMs:            cfg.settleMs ?? 120,                              // pace between moves (still paced for the phone link; the circuit breaker guards floods)
     postSaleMs:          cfg.postSaleMs ?? 300,                            // settle after sale
 
     maxOpenRetries:      cfg.maxOpenRetries ?? 2,
@@ -440,6 +440,7 @@ function createAutoSell({ ctx, config, log = console.log }) {
 
       const placedSlots = [];     // GUI destination slots we filled
       const placedInvSlots = [];  // player-inventory source slots we emptied
+      const movedStack = new Map(); // invSlot -> the stack_id we moved out (to detect pickup refills)
       const nextGuiSlot = () => {
         for (let i = 0; i < settings.guiSize; i++) if (!usedGui.has(i)) return i;
         return -1;
@@ -470,12 +471,14 @@ function createAutoSell({ ctx, config, log = console.log }) {
         const name = itemName(liveSlot(invSlot));
 
         let outcome = 'fail';
+        let movedStackId = 0;
         for (let r = 0; r <= settings.maxItemRetries && outcome === 'fail'; r++) {
           // Re-read the live slot every attempt so the stack_id is current.
           const item = liveSlot(invSlot);
           if (isEmptySlot(item)) { outcome = 'gone'; break; }
           const count = countOf(item);
           const srcStackId = stackIdOf(item);
+          movedStackId = srcStackId;
           dbg(`move INV[${invSlot}] ${name} x${count} (stackId=${srcStackId}) -> GUI[${guiSlot}]${r ? ` (retry ${r})` : ''}`);
           let reqId = null;
           try {
@@ -496,8 +499,8 @@ function createAutoSell({ ctx, config, log = console.log }) {
           else { outcome = 'fail'; if (r < settings.maxItemRetries) await sleep(settings.settleMs); }
         }
 
-        if (outcome === 'ok') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); moved++; consecutiveTimeouts = 0; }
-        else if (outcome === 'timeout') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); uncertain++; consecutiveTimeouts++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`); }
+        if (outcome === 'ok') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); movedStack.set(invSlot, movedStackId); moved++; consecutiveTimeouts = 0; }
+        else if (outcome === 'timeout') { usedGui.add(guiSlot); placedSlots.push(guiSlot); placedInvSlots.push(invSlot); movedStack.set(invSlot, movedStackId); uncertain++; consecutiveTimeouts++; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: no response (assuming sent)`); }
         else if (outcome === 'gone') { attempted--; /* item left the slot before we moved it — not a failure */ }
         else { skipped++; consecutiveTimeouts = 0; log(`\x1b[33m[SELL]\x1b[0m INV[${invSlot}] ${name}: move rejected — skipping`); }
 
@@ -579,9 +582,16 @@ function createAutoSell({ ctx, config, log = console.log }) {
       if (confirmed && placedInvSlots.length && typeof state.setInventory === 'function') {
         try {
           const slots = [...(state.inventory?.slots || [])];
-          for (const inv of placedInvSlots) slots[inv] = { network_id: 0 };
+          let cleared = 0;
+          for (const inv of placedInvSlots) {
+            // Only clear if the slot still holds the EXACT stack we moved out. If a
+            // ground-item pickup refilled the freed slot mid-cycle, its stack_id
+            // differs — blindly zeroing it would drop a real, unsold item from local
+            // state until the next server resync. (Pickup-vs-sell race the user hit.)
+            if (stackIdOf(slots[inv]) === movedStack.get(inv)) { slots[inv] = { network_id: 0 }; cleared++; }
+          }
           state.setInventory(slots, state.inventory?.heldSlot || 0);
-          dbg(`cleared ${placedInvSlots.length} sold inventory slots in local state`);
+          dbg(`cleared ${cleared}/${placedInvSlots.length} sold inventory slots in local state`);
         } catch (e) { dbg(`local inventory clear failed: ${e.message}`); }
       }
 
