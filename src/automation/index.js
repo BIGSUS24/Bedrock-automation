@@ -26,7 +26,7 @@ const { Scheduler }         = require('./scheduler');
 const { CooldownTracker }   = require('./cooldowns');
 const { createAutoHit }     = require('./actions/auto_hit');
 const { createAutoEat }     = require('./actions/auto_eat');
-const { createAutoSell, isEmptySlot } = require('./actions/auto_sell');
+const { createAutoSell, isEmptySlot, makeStuckRestarter } = require('./actions/auto_sell');
 
 /**
  * Create and wire up the automation stack.
@@ -63,11 +63,28 @@ function createAutomation(config, stateManager, protocolClient) {
   };
 
   const sellAction = createAutoSell({ ctx, config, log: console.log });
+
+  // ── Self-restart watchdog ────────────────────────────────────────────────────
+  // On a flaky phone link the sell GUI sometimes silently dies: cycles keep
+  // logging "no response (assuming sent)" / "GUI failed to open" and nothing
+  // actually sells. A full disconnect+reconnect (what the user does by hand)
+  // clears it. After `restartAfterStuckCycles` consecutive wedged cycles, drop
+  // the connection — main.js's 'disconnected' handler runs the normal reconnect,
+  // which respawns and re-arms autosell from scratch. (0 disables.)
+  const sellRestarter = makeStuckRestarter({
+    restartAfter: sellCfg.restartAfterStuckCycles ?? 4,
+    log: (m) => console.log(`\x1b[33m[SELL]\x1b[0m ${m}`),
+    onRestart: () => {
+      console.log('\x1b[31m[SELL]\x1b[0m /sell wedged — restarting connection to recover');
+      Promise.resolve(protocolClient.disconnect?.('autosell wedged — auto-restart')).catch(() => {});
+    },
+  });
+
   const sellSpec = {
     name: 'autoSell',
     interval: sellCfg.intervalMs ?? 10000,    // 10 sec floor
     condition: sellAction.condition,
-    execute: sellAction.execute,
+    execute: async (state, proto) => { sellRestarter.record(await sellAction.runOnce(state, proto)); },
   };
 
   // ── Event-driven selling ────────────────────────────────────────────────────
@@ -89,6 +106,7 @@ function createAutomation(config, stateManager, protocolClient) {
     eventSellInFlight = true;
     Promise.resolve()
       .then(() => sellAction.runOnce(stateManager, protocolClient))
+      .then((r) => sellRestarter.record(r))
       .catch(() => { /* runOnce never throws, but stay defensive */ })
       .finally(() => { eventSellInFlight = false; });
   }

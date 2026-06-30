@@ -633,4 +633,44 @@ function createAutoSell({ ctx, config, log = console.log }) {
   return { condition, execute, runOnce, dumpContainer, dumpInventory, findSellButton, settings };
 }
 
-module.exports = { createAutoSell, itemName, isEmptySlot, stackIdOf, itemDisplayName, stripColors };
+/**
+ * Classify one runOnce() result for the self-restart watchdog:
+ *   'healthy' — a real sale confirmed, OR nothing to sell (empty inventory).
+ *   'ignore'  — transient/idle (disconnected, not playing, overlapping cycle);
+ *               we're already (re)connecting or have nothing to do.
+ *   'stuck'   — had items but confirmed no sale, or the GUI won't open/work
+ *               (no_gui / no_button / gui_dead / link_stalled / "no response,
+ *               assuming sent" that never confirmed). This is the wedged state.
+ */
+function classifySellResult(r) {
+  if (!r) return 'ignore';
+  if (r.confirmed === true) return 'healthy';
+  if (r.ok === true && !r.moved && !r.uncertain && !r.skipped) return 'healthy';
+  if (r.reason === 'disconnected' || r.reason === 'not_playing' || r.reason === 'already_selling') return 'ignore';
+  return 'stuck';
+}
+
+/**
+ * Watchdog: count consecutive wedged sell cycles and fire onRestart() after
+ * `restartAfter` of them (the user's manual disconnect/reconnect, automated).
+ * A healthy cycle resets the count; 'ignore' cycles leave it untouched.
+ * Set restartAfter <= 0 to disable. Returns { record, reset, count }.
+ */
+function makeStuckRestarter({ restartAfter = 4, onRestart, log = () => {} }) {
+  let count = 0;
+  return {
+    get count() { return count; },
+    reset() { count = 0; },
+    record(r) {
+      if (restartAfter <= 0) return;
+      const verdict = classifySellResult(r);
+      if (verdict === 'healthy') { count = 0; return; }
+      if (verdict === 'ignore') return;
+      count++;
+      log(`unproductive sell cycle ${count}/${restartAfter} (${r.reason || 'unconfirmed'})`);
+      if (count >= restartAfter) { count = 0; onRestart(); }
+    },
+  };
+}
+
+module.exports = { createAutoSell, itemName, isEmptySlot, stackIdOf, itemDisplayName, stripColors, classifySellResult, makeStuckRestarter };

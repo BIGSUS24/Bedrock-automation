@@ -40,8 +40,11 @@ module.exports = {
       autoEat: { enabled: false, slot: 1, intervalMs: 300000, durationMs: 10000 },
       // Sell every 10s, AND immediately whenever the inventory fills past
       // `thresholdSlots` (of 36) so a fast machine never backs up onto the ground.
+      // restartAfterStuckCycles: after N consecutive cycles that sell nothing
+      // (GUI won't open / "no response, assuming sent"), auto disconnect+reconnect
+      // to unwedge — this is what fixes it by hand on the phone. 0 disables.
       // Run `.sell debug` once to confirm guiContainer matches this server.
-      autoSell: { enabled: true, intervalMs: 10000, thresholdSlots: 32, command: '/sell' },
+      autoSell: { enabled: true, intervalMs: 10000, thresholdSlots: 32, restartAfterStuckCycles: 4, command: '/sell' },
     },
   },
   gameplay: {

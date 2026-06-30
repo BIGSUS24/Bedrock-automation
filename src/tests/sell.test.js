@@ -8,7 +8,7 @@
 
 const assert = require('assert');
 const EventEmitter = require('events');
-const { createAutoSell } = require('../automation/actions/auto_sell');
+const { createAutoSell, makeStuckRestarter } = require('../automation/actions/auto_sell');
 
 // A GUI slot holding the green "$" sell button (matched by NBT display name).
 function buttonItem() {
@@ -132,11 +132,40 @@ async function test5_pickupRaceGuard() {
 }
 function stackIdRaw(it) { return Number(it?.raw?.stack_id ?? it?.stack_id ?? 0); }
 
+function test6_stuckRestarter() {
+  // Wedged cycles must trip a restart after exactly N; a healthy sale resets the
+  // count; an 'ignore' (disconnected) cycle must NOT advance it.
+  let restarts = 0;
+  const wd = makeStuckRestarter({ restartAfter: 3, onRestart: () => { restarts++; }, log: () => {} });
+
+  wd.record({ ok: false, reason: 'no_gui' });          // stuck 1
+  wd.record({ ok: false, reason: 'link_stalled' });    // stuck 2
+  assert.strictEqual(restarts, 0, 'must not restart before threshold');
+  wd.record({ ok: true, moved: 2, clicked: true, confirmed: false }); // stuck 3 -> restart
+  assert.strictEqual(restarts, 1, 'restart fires at exactly N stuck cycles');
+  assert.strictEqual(wd.count, 0, 'counter resets after firing');
+
+  wd.record({ ok: false, reason: 'no_button' });       // stuck 1
+  wd.record({ ok: true, confirmed: true, moved: 5 });  // healthy -> reset
+  assert.strictEqual(wd.count, 0, 'a confirmed sale clears the stuck count');
+
+  wd.record({ ok: false, reason: 'no_gui' });          // stuck 1
+  wd.record({ ok: false, reason: 'disconnected' });    // ignored
+  wd.record({ ok: true, moved: 0, uncertain: 0, skipped: 0 }); // empty inv -> healthy reset
+  assert.strictEqual(wd.count, 0, 'empty inventory is healthy, disconnected is ignored');
+  assert.strictEqual(restarts, 1, 'no extra restarts from the reset paths');
+
+  // Disabled watchdog never fires.
+  const off = makeStuckRestarter({ restartAfter: 0, onRestart: () => { throw new Error('fired'); } });
+  for (let i = 0; i < 10; i++) off.record({ ok: false, reason: 'no_gui' });
+}
+
 (async () => {
   await test1_happyPath();
   await test2_deadGuiSelfHeal();
   await test3_reuseNoButtonRecovery();
   await test4_circuitBreaker();
   await test5_pickupRaceGuard();
-  console.log('✓ sell.test.js — all 5 passed');
+  test6_stuckRestarter();
+  console.log('✓ sell.test.js — all 6 passed');
 })().catch((e) => { console.error('✕', e.message); process.exit(1); });
